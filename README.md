@@ -1,8 +1,13 @@
 # Go Rate Limiting with Redis
 
-Adapted heavily from github.com/abo/rerate
+Adapted heavily from github.com/abo/rerate but uses gopkg.in/redis.v5 as its Redis client.
 
+All interfaces should stay the same as rerate, so in theory this should be a drop-in replacement.
 
+If you have trouble implementing this library, contact me at ian@getstream.io for support.
+
+No warranty expressed or implied with this library, and I don't guarantee we'll be very fast at merging
+in changes from rerate in the future.
 
 ---
 
