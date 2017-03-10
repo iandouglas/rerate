@@ -1,17 +1,20 @@
-package rerate
+package streamgorate
 
 import (
 	"bytes"
 	"strconv"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"gopkg.in/redis.v5"
+
+	"fmt"
+	"errors"
 )
 
 // Counter count total occurs during a period,
 // it will store occurs during every time slice interval: (now ~ now - interval), (now - interval ~ now - 2*interval)...
 type Counter struct {
-	pool     Pool
+	client   *redis.Client
 	pfx      string
 	period   time.Duration
 	interval time.Duration
@@ -19,9 +22,9 @@ type Counter struct {
 }
 
 // NewCounter create a new Counter
-func NewCounter(pool Pool, prefix string, period, interval time.Duration) *Counter {
+func NewCounter(client *redis.Client, prefix string, period, interval time.Duration) *Counter {
 	return &Counter{
-		pool:     pool,
+		client:   client,
 		pfx:      prefix,
 		period:   period,
 		interval: interval,
@@ -43,20 +46,21 @@ func (c *Counter) key(id string) string {
 
 // increment count in specific bucket
 func (c *Counter) inc(id string, bucket int) error {
-	conn := c.pool.Get()
-	defer conn.Close()
-
-	args := make([]interface{}, (c.bkts/2)+1)
-	args[0] = c.key(id)
+	keysToDelete := make([]string, int(c.bkts/2))
 	for i := 0; i < c.bkts/2; i++ {
-		args[i+1] = (bucket + i + 1) % c.bkts
+		keyToDelete := strconv.Itoa(int(bucket+i+1) % c.bkts)
+		keysToDelete[i] = keyToDelete
 	}
 
-	conn.Send("MULTI")
-	conn.Send("HINCRBY", c.key(id), strconv.Itoa(bucket), 1)
-	conn.Send("HDEL", args...)
-	conn.Send("PEXPIRE", c.key(id), int64(c.period/time.Millisecond))
-	_, err := conn.Do("EXEC")
+	pipe := c.client.TxPipeline()
+	defer pipe.Close()
+
+	pipe.HIncrBy(c.key(id), strconv.Itoa(bucket), 1)
+	pipe.HDel(c.key(id), keysToDelete...)
+	expiry := int64(c.period)
+	pipe.PExpire(c.key(id), time.Duration(expiry))
+	_, err := pipe.Exec()
+	pipe.Save()
 
 	return err
 }
@@ -81,23 +85,21 @@ func (c *Counter) buckets(from int) []int {
 
 func (c *Counter) histogram(id string, from int) ([]int64, error) {
 	buckets := c.buckets(from)
-	args := make([]interface{}, len(buckets)+1)
-	args[0] = c.key(id)
+	args := make([]string, len(buckets))
 	for i, v := range buckets {
-		args[i+1] = v
+		args[i] = strconv.Itoa(v)
 	}
 
-	conn := c.pool.Get()
-	defer conn.Close()
-
-	vals, err := redis.Strings(conn.Do("HMGET", args...))
+	result, err := c.client.HMGet(c.key(id), args...).Result()
+	vals, err := Strings(result, err)
 	if err != nil {
 		return []int64{}, err
 	}
 
 	ret := make([]int64, len(buckets))
 	for i, val := range vals {
-		if v, e := strconv.ParseInt(val, 10, 64); e == nil {
+		v, err := strconv.ParseInt(val, 10, 64)
+		if err == nil {
 			ret[i] = v
 		} else {
 			ret[i] = 0
@@ -110,7 +112,6 @@ func (c *Counter) histogram(id string, from int) ([]int64, error) {
 func (c *Counter) Histogram(id string) ([]int64, error) {
 	now := time.Now().UnixNano()
 	from := c.hash(now)
-
 	return c.histogram(id, from)
 }
 
@@ -130,9 +131,39 @@ func (c *Counter) Count(id string) (int64, error) {
 
 // Reset cleanup occurs, set it to zero
 func (c *Counter) Reset(id string) error {
-	conn := c.pool.Get()
-	defer conn.Close()
-
-	_, err := conn.Do("DEL", c.key(id))
+	_, err := c.client.Del(c.key(id)).Result()
 	return err
+}
+
+
+// all code below copied from github.com/garyburd/redigo/redis/
+var ErrNil = errors.New("streamgorate: nil returned")
+type Error string
+func (err Error) Error() string { return string(err) }
+
+func Strings(reply interface{}, err error) ([]string, error) {
+	if err != nil {
+		return nil, err
+	}
+	switch reply := reply.(type) {
+	case []interface{}:
+		result := make([]string, len(reply))
+		for i := range reply {
+			if reply[i] == nil {
+				continue
+			}
+			//p, ok := reply[i].([]byte)
+			//if !ok {
+			//	fmt.Println("Strings return 2")
+			//	return nil, fmt.Errorf("go-ratelimiting-counter-Strings: unexpected element type for Strings, got type %T", reply[i])
+			//}
+			result[i] = reply[i].(string)
+		}
+		return result, nil
+	case nil:
+		return nil, ErrNil
+	case Error:
+		return nil, reply
+	}
+	return nil, fmt.Errorf("go-ratelimiting-counter-Strings: unexpected type for Strings, got type %T", reply)
 }

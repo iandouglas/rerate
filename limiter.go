@@ -1,18 +1,23 @@
-package rerate
+package streamgorate
 
-import "time"
+import (
+	"time"
+	"gopkg.in/redis.v5"
+)
 
 // Limiter a redis-based ratelimiter
 type Limiter struct {
+	Client *redis.Client
 	Counter
-	max int64
+	max    int64
 }
 
 // NewLimiter create a new redis-based ratelimiter
 // the Limiter limits the rate to max times per period
-func NewLimiter(pool Pool, pfx string, period, interval time.Duration, max int64) *Limiter {
+func NewLimiter(client *redis.Client, pfx string, period, interval time.Duration, max int64) *Limiter {
 	return &Limiter{
-		Counter: *NewCounter(pool, pfx, period, interval),
+		Client:  client,
+		Counter: *NewCounter(client, pfx, period, interval),
 		max:     max,
 	}
 }

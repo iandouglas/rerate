@@ -1,4 +1,4 @@
-package rerate_test
+package streamgorate_test
 
 import (
 	"math/rand"
@@ -7,17 +7,18 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/abo/rerate"
+	. "github.com/GetStream/go-ratelimiting"
+	"gopkg.in/redis.v5"
 )
-
-var pool Pool
 
 func randkey() string {
 	return strconv.Itoa(rand.Int())
 }
 
+var RedisClient *redis.Client
+
 func init() {
-	pool = newRedisPool("localhost:6379", "")
+	RedisClient = NewRedisPool("localhost:6379", "")
 }
 
 func TestBuckets(t *testing.T) {
@@ -27,7 +28,7 @@ func TestBuckets(t *testing.T) {
 		10: {10, 9, 8, 7, 6, 5, 4, 3, 2, 1},
 	}
 
-	counter := NewCounter(pool, "rerate:test:counter:buckets", 10*time.Second, time.Second)
+	counter := NewCounter(RedisClient, "stream:test:counter:buckets", 10*time.Second, time.Second)
 	for input, expect := range testcases {
 		buckets := Buckets(counter, input)
 		if !reflect.DeepEqual(buckets, expect) {
@@ -38,14 +39,14 @@ func TestBuckets(t *testing.T) {
 
 func TestHash(t *testing.T) {
 	// hash(a+s) = hash(a)+1
-	counter := NewCounter(pool, "rerate:test:counter:hash", time.Minute, time.Second)
+	counter := NewCounter(RedisClient, "stream:test:counter:hash", time.Minute, time.Second)
 	l := int(time.Minute / time.Second)
 
 	testcases := []int64{time.Now().UnixNano(),
-		time.Now().UnixNano() - int64(rand.Intn(100))*int64(time.Second),
-		time.Now().UnixNano() - int64(rand.Intn(100))*int64(time.Second),
-		time.Now().UnixNano() - int64(rand.Intn(100))*int64(time.Second),
-		time.Now().UnixNano() - int64(rand.Intn(100))*int64(time.Second)}
+						 time.Now().UnixNano() - int64(rand.Intn(100))*int64(time.Second),
+						 time.Now().UnixNano() - int64(rand.Intn(100))*int64(time.Second),
+						 time.Now().UnixNano() - int64(rand.Intn(100))*int64(time.Second),
+						 time.Now().UnixNano() - int64(rand.Intn(100))*int64(time.Second)}
 
 	for _, input := range testcases {
 		next := input + int64(time.Second)
@@ -70,12 +71,13 @@ func TestHash(t *testing.T) {
 }
 
 func TestHistogram(t *testing.T) {
-	counter := NewCounter(pool, "rerate:test:counter:count", 4000*time.Millisecond, 400*time.Millisecond)
+	counter := NewCounter(RedisClient, "stream:test:counter:count", 4000*time.Millisecond, 400*time.Millisecond)
 	id := randkey()
 	counter.Reset(id)
 
 	zero := []int64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-	if b, err := counter.Histogram(id); err != nil || !reflect.DeepEqual(b, zero) {
+	b, err := counter.Histogram(id)
+	if err != nil || !reflect.DeepEqual(b, zero) {
 		t.Fatal("expect all zero without err, actual", b, err)
 	}
 
@@ -84,6 +86,7 @@ func TestHistogram(t *testing.T) {
 			IncBucket(counter, id, i)
 		}
 	} //[]int64{0,1,2,3,4,5,6,7,8,9,10,0,0,0,0,0,0,0,0,0}
+	b, err = counter.Histogram(id)
 
 	for i := 0; i < 20; i++ {
 		for j := len(zero) - 1; j > 0; j-- {
@@ -100,7 +103,7 @@ func TestHistogram(t *testing.T) {
 }
 
 func TestCounter(t *testing.T) {
-	counter := NewCounter(pool, "rerate:test:counter:counter", time.Minute, time.Second)
+	counter := NewCounter(RedisClient, "stream:test:counter:counter", time.Minute, time.Second)
 	ip1, ip2 := randkey(), randkey()
 
 	if err := counter.Reset(ip1); err != nil {

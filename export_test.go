@@ -1,4 +1,4 @@
-package rerate
+package streamgorate
 
 func Buckets(c *Counter, from int) []int {
 	return c.buckets(from)
